@@ -9,6 +9,8 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 import subprocess
+from warnings import warn
+from collections import OrderedDict
 from glob import iglob
 as_strided = np.lib.stride_tricks.as_strided
 
@@ -21,7 +23,7 @@ ichain = it.chain.from_iterable
 
 expandglobs = lambda filepatterns: ichain(iglob(ptrn) for ptrn in filepatterns)
 
-def stackplot(fig, ax, xlabels, legend, values, width=0.8):
+def stackplot(ax, xlabels, legend, values, width=0.8):
     ax.set_prop_cycle(plt.cycler(color=plt.cm.Set3.colors))
 
     lastv = np.zeros(len(xlabels))
@@ -32,40 +34,86 @@ def stackplot(fig, ax, xlabels, legend, values, width=0.8):
     ax.set_xticklabels(xlabels, rotation=15)
     ax.legend(prop={'family': 'monospace'})
 
-# Take N combined samples over all classes, keeping the samples as evenly distributed as possible
-# Note: there will be some rounding error
-# If N=None then select M samples from each class where M is the number of samples for the class with the least samples
-def num_samples_over_classes(datadict, N=None, key=None):
+# Take M combined samples over all rows, keeping the samples as evenly
+# distributed as possible
+def sample_sets(x, M, kmax=None, key=None):
+    L = len(x)
+    if L == 0:
+        return
+    
     if key is None:
         key = len
     
-    # Iterate over classes in increasing order of samples per class
-    classes = sorted(datadict, key=lambda cls: key(datadict[cls]))
-    
-    if N is None:
-        # Choose N so sample is totally balanced across classes
-        N = key(datadict[classes[0]]) * len(classes)
-    
-    nsamples = sum(key(v) for v in datadict.values())
-    if N == nsamples:
-        selectall = True
-    else:
-        selectall = False
+    # Number of samples per row
+    xn = np.array([*map(key, x)])
 
-    while N > 0 and len(classes):
-        m = max(1, N//len(classes))   
-        cls = classes.pop(0)
-        if selectall: # corner case
-            m = key(datadict[cls]) 
-        else:
-            m = min(m, key(datadict[cls]))
-        yield (cls, m)
-        N -= m
+    # Number of samples in sorted order
+    xnas = np.argsort(xn)
 
-def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey=None, shuffle=True, split_mode='discard', rng=None):
+    # Array with number of elements to be chosen from each row
+    m = np.zeros_like(xn)
+
+    if kmax is None:
+        kmax = xn[xnas[-1]]
+        
+    # Find the number of samples to choose per bin
+    i = 0
+    k = 0
+    R = 0
+    while i < L and 0 < M:
+        # Get the minimum number of samples contained in each bin
+        ki = xnas[i]
+        ni = xn[ki]
+        k = ni - m[i]
+
+        # Get the total remaining samples
+        r = min(M, k*(L - i))
+
+        # Spread the samples over the remaining bins
+        k, r = divmod(r, (L - i))
+        
+        M -= k*(L - i) + R
+
+        # Add k samples to each output bin
+        m[i:] += k
+
+        # Add the remainder that we couldn't fit last loop
+        m[i:i+R] += 1
+
+        # If there's space, fit the remainder in the next r consecutive bins
+        if m[i] < ni:
+            m[i:i+r] += 1
+            M -= r
+        else:    
+            # Save the remainder that will be added next loop
+            R = r
+        
+        # Skip ahead to the next largest bin
+        while i < L and xn[xnas[i]] == ni:
+            i += 1
+
+    # Get back the index order
+    xnas = np.argsort(xnas)
+
+    # Yield the number of samples chosen per bin
+    i = 0
+    y = [0]*L
+    while i < L:
+        ki = xnas[i]
+        n = min(kmax, m[ki])
+        if n < kmax < xn[i] and 0 < R:
+            n += 1
+            R -= 1
+        yield (n, x[i])
+        # yield np.choice(x[i], size=n)
+        i += 1
+
+def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey=None, shuffle=True, rng=None, split_mode='discard', balance_groups=False, balance_hashes=False):
     '''
     Generate a train/test split
     Note: Assumes all elements with the same hashkey also have the same groupkey (but not vice-versa)
+    N : scalar
+        Maximum number of samples to choose per class
     hashkey : function
         allows you to pool data samples to disallow samples from similar distributions 
         (e.g. sub-segments from the same sample) splitting across folds
@@ -73,8 +121,7 @@ def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey
         allows you to specify sample groups which should be explicitly split 
         between folds (e.g. split all samples belonging to the same experiment across folds)
     split_mode : string
-        How to handle sample groups that are either too small to split
-        or would unbalance the training-test split
+        How to handle sample groups that are too small to split
         'test' - place data into test split
         'train' - place data into training split
         'discard' - place data into discard
@@ -84,9 +131,6 @@ def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey
     discard = {}
     
     assert split_mode in ('train', 'test', 'discard')
-    
-    if N is None:
-        N = max(map(len, class_samples.values()))
 
     if rng is None:
         rng = np.random
@@ -110,24 +154,38 @@ def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey
         else:
             group_map = { k: [*it] for (k, it) in groupby(hash_map, groupkey) }
         
+        # Shuffle to randomize the split across folds
+        groups = [*group_map]
+        if shuffle:
+            rng.shuffle(groups) 
+        
         # Balance sampling according to the total number of samples belonging to a hash
-        lenkey = lambda hashes: sum(len(hash_map[h]) for h in hashes)
+        glenkey = lambda gk: sum(len(hash_map[h]) for h in group_map[gk])
 
+        Ngmax = None
+        if balance_groups:
+            Ngmax = min(map(glenkey, groups))
+        
+        if N is None:
+            Nc = len(clssamples)
+        else:
+            Nc = min(N, len(clssamples))
+        
         # Distribute each 'group' of samples between train and test folds
-        for gk, m in num_samples_over_classes(group_map, N=N, key=lenkey):   
+        for m, gk in sample_sets(groups, Nc, kmax=Ngmax, key=glenkey):
             # Select a portion for training, and rest is reserved for testing
             m_train = max(1, min(m-1, int((1-test_portion)*m + 0.5)))
             m_test = m - m_train
             hashes = group_map[gk]
-
             try:
-                assert (0 < m_train < m), "Not enough samples in group '%s' to allow splitting" % gk
-                assert (len(hashes) > 1), "Not enough hashes in group' %s' to allow splitting" % gk
-            except AssertionError:
+                assert (0 < m_train < m), "Not enough samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
+                assert (len(hashes) > 1), "Not enough hashed samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
+            except AssertionError as err:
                 # if split_mode == 'raise':
                 #     raise
+                # warn(str(err))
                 if split_mode == 'discard':
-                    m_train = m_test = 0
+                    m_train = m_test = 0                    
                 elif split_mode == 'train':
                     m_train = m
                     m_test = 0
@@ -135,33 +193,44 @@ def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey
                     m_test = m
                     m_train = 0
             
-            # # Shuffle to randomize the split across folds
-            # if shuffle:
-            #     rng.shuffle(hashes)
-            
-            # hashes belonging to this group
-            group_hash_map = { h: hash_map.pop(h) for h in hashes }
+            # Shuffle to randomize the split across folds
+            if shuffle:
+                rng.shuffle(hashes)
 
-            f = 0
+            group_hash_map = { h: hash_map[h] for h in hashes }
+            hlenkey = lambda h: len(hash_map[h])
+
+            Nhmax = None
+            if balance_hashes:
+                Nhmax = min(map(hlenkey, hashes))
+
+            # Deal out samples
+            # Since hash groups are not necessarily of the same size, alternate
+            # between folds to keep things as balanced as possible
+            f = 0            
             folds = [(train, m_train), (test, m_test)]
-            for hk, m_h in num_samples_over_classes(group_hash_map, N=m):
-                if folds[f][1] > 0:
-                    fld, m_f = folds[f]
-                
+            fld, m_f = folds[f]
+            for m_h, hk in sample_sets(hashes, m, kmax=Nhmax, key=hlenkey):
                 samples = group_hash_map.pop(hk)
-                n = min(m_h, m_f, len(samples))
                 if shuffle:
                     rng.shuffle(samples)
-
+                
+                if folds[f][1] > 0:
+                    fld, m_f = folds[f]
+                if m_f == 0:
+                    break
+                
+                n = min(m_h, m_f)
+                m_f -= n
                 fld[cls] += samples[:n]
                 
+                # Alternate to other fold
+                folds[f] = (fld, m_f)
+                f ^= 1
+
                 # Discard remaining samples in this hash group to maintain
                 # the train/test ratio
                 # discard[cls] += samples[n:]
-                
-                m_f -= n
-                folds[f] = (fld, m_f)
-                f ^= 1
 
             # Any remaining hashes in this group which would throw off the
             # train/test ratio are discarded
@@ -392,7 +461,6 @@ class RSTFTStrider(Strider):
             
         return x * self.overlap / np.sum(self.window**2)
     
-from collections import OrderedDict
 class SubprocessDict(object):
     def __init__(self, P, timeout=None):
         self.P = P

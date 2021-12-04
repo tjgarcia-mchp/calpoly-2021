@@ -9,10 +9,10 @@ set -x -e
 
 #%% Setup
 # Required: Classes to choose from each of the source datasets
-ESC50_TARGETS="footsteps dog door_wood_knock laughing coughing cat"
+ESC50_TARGETS="footsteps dog door_wood_knock laughing coughing cat babycry"
 MSSNSD_TARGETS="AirConditioner ShuttingDoor Babble Restaurant Cafe"
 DEMAND_TARGETS="DWASHING DLIVING DKITCHEN"
-YOUTUBE_TARGETS="glassbreak"
+YOUTUBE_TARGETS="glassbreak babycry"
 
 # Required: What class(es) to target
 # NB: careful not to duplicate classes
@@ -36,7 +36,7 @@ RMDIR="rm -rf"
 SPLIT_SEGMENTS_ARGS='--segment-length=3-5 --silence-threshold=-60 --min-silence-duration=0.5'
 
 # Parameters for splitting segments into train and test folds
-SPLIT_FOLDS_ARGS='--balance --copy --test-ratio=0.2'
+SPLIT_FOLDS_ARGS='--balance-classes --copy --test-ratio=0.2'
 
 mkdir -p "$DSTDIR"
 
