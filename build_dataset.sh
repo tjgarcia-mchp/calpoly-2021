@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #%% Setup
-if [ "$#" -lt 1 ]; then
-    echo "usage: build_dataset.sh [-f] <source-directory> [<output-directory>]"
-    exit -1
-fi
-
 if [ $1 = "-f" ]; then
     OVERWRITE=1
     shift
 else
     OVERWRITE=0
+fi
+
+if [ "$#" -lt 1 ]; then
+    echo "usage: build_dataset.sh [-f] <source-directory> [<output-directory>]"
+    exit -1
 fi
 
 # Echo all commands / exit on first error
@@ -94,8 +94,15 @@ for class in $ESC50_TARGETS; do
     $RMDIR "$ODIR"
 
     # Map class string label to class ID
-    classID=$(python -c "import json; print(json.load(open("\""esc50-class-map.json"\""))["\"$class\""])")    
+    classID=$(python -c "import json; print(json.load(open("\""esc50-class-map.json"\""))["\"$class\""])")
     $PYTHON split_into_segments.py $SPLIT_SEGMENTS_ARGS "${ESC50_SRCDIR}"'/*-'"${classID}.wav" "$ODIR"
+
+    # We're careful here to hash ESC-50 samples by their original CLIP-ID
+    # Note: ESC50 file names have format: {FOLD}-{CLIP_ID}-{TAKE}-{TARGET}.wav
+    nohashptrn='-$(basename {} | cut -d- -f2)-'
+    find "$ODIR" -type f |
+        xargs -P4 -i sh -c \
+            'mv {} '"$ODIR"'/$(basename {} | sed "s/\('"$nohashptrn"'\)/\1_nohash_-/g")'
 done
 
 SRCDS="DEMAND"
@@ -105,7 +112,13 @@ for class in $DEMAND_TARGETS; do
         continue
     fi    
     $RMDIR "$ODIR"
+    
     $PYTHON split_into_segments.py $SPLIT_SEGMENTS_ARGS "${DEMAND_SRCDIR}/${class}.wav" "$ODIR"
+    
+    nohashptrn=".p[0-9]\+."
+    find "$ODIR" -type f |
+        xargs -P4 -i sh -c \
+            'mv {} '"$ODIR"'/$(basename {} | sed "s/\('"$nohashptrn"'\)/._nohash_\1./g")'
 done
 
 SRCDS="MSSNSD"
@@ -115,7 +128,13 @@ for class in $MSSNSD_TARGETS; do
         continue
     fi    
     $RMDIR "$ODIR"
+    
     $PYTHON split_into_segments.py $SPLIT_SEGMENTS_ARGS "${MSSNSD_SRCDIR}/${class}_"'*.wav' "$ODIR"
+    
+    nohashptrn=".p[0-9]\+."
+    find "$ODIR" -type f |
+        xargs -P4 -i sh -c \
+            'mv {} '"$ODIR"'/$(basename {} | sed "s/\('"$nohashptrn"'\)/._nohash_\1./g")'
 done
 
 SRCDS="YOUTUBE"
@@ -125,7 +144,13 @@ for class in $YOUTUBE_TARGETS; do
         continue
     fi    
     $RMDIR "$ODIR"
+    
     $PYTHON split_into_segments.py $SPLIT_SEGMENTS_ARGS "${YOUTUBE_SRCDIR}/${class}/"'*.wav' "$ODIR"
+    
+    nohashptrn=".c[0-9]\+."
+    find "$ODIR" -type f |
+        xargs -P4 -i sh -c \
+            'mv {} '"$ODIR"'/$(basename {} | sed "s/\('"$nohashptrn"'\)/._nohash_\1./g")'
 done
 
 SRCDS="keywords"

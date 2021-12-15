@@ -109,19 +109,7 @@ def hashkey(fn):
     srcds, srccat = srcdir.split('_', 1)
     basename, ext = os.path.basename(fn).rsplit('.', 1)
     
-    if srcds == 'ESC50':
-        # We're careful here to hash ESC-50 samples by their original CLIP-ID
-        # Note: ESC50 file names have format: {FOLD}-{CLIP_ID}-{TAKE}-{TARGET}.wav
-        hashedfn = basename.split('-')[1]
-    elif srcds == 'DEMAND':
-        # for DEMAND we do allow subsegments to split between folds
-        hashedfn = basename
-    elif srcds == 'keywords':
-        # for google voice commands use the _nohash_ tag
-        hashedfn = basename.rsplit('_nohash_', 1)[0]
-    else:
-        # This ensures subsegments are *not* split across train/test folds
-        hashedfn = nohashptrn.sub('', basename)
+    hashedfn = basename.rsplit('_nohash_', 1)[0]
         
     # Ensure that category and hash are delimited by the first underscore ('_')
     srccat = srccat.replace('_','-')

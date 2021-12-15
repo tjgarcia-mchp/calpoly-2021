@@ -61,18 +61,22 @@ The output will also contain a bar chart which shows the makeup of the dataset a
       classes/categories from the data corpus you want to target for
       classification. The `NOISE` and `UNKNOWN` classes are optional and may be
       left blank.
-   3. Set `SPLIT_SEGMENTS_ARGS` according to how you'd like to segment your data. This
-      determines the length of each sample (`--segment-length`), as well as whether to exclude
-      segments below a certain signal level (`--silence-threshold`).
+   3. Set `SPLIT_SEGMENTS_ARGS` according to how you'd like to segment your
+      data. This determines the length of each sample
+      (`--segment-length=<fixed_length> OR <min_length>-[<max_length>]`), as
+      well as whether to exclude segments below a certain signal level
+      (`--silence-threshold`).
    4. Set `SPLIT_FOLDS_ARGS` according to how you'd like to split up your
       training and test data. This determines the portion of data that should be
-      reserved for testing (`--test-ratio`) and whether to balance samples among
-      classes (`--balance`).
-4. Call `build_dataset.sh` with the source directory (where you've extracted the zip files) and output directory as arguments e.g.:
+      reserved for testing (`--test-ratio`), whether to balance samples among
+      classes (`--balance-classes`), and other parameters.
+4. Call `build_dataset.sh` with the source directory (where you've extracted the
+   zip files) and output directory as arguments e.g.:
    > `./build_dataset.sh . my-dataset`
-5. Upload the samples from the resultant `train/` and `test/` folders to your project.
+5. Upload the samples from the resultant `train/` and `test/` folders to your
+   project.
 
-> Note that `split_into_train_test.py` depends on the convention that dataset
+> !NB! `split_into_train_test.py` depends on the convention that dataset
 > folders are structured as `<data-set-name>_<category-name>` as is done in
 > `build_dataset.sh`.
 
@@ -82,10 +86,13 @@ The output will also contain a bar chart which shows the makeup of the dataset a
   * To install python dependencies: 
     > `pip install -r requirements.txt`
 * SoX
-  * Install the latest SoX from https://sourceforge.net/projects/sox/files/latest/download or however else you get packages.
+  * Install the latest SoX from
+    https://sourceforge.net/projects/sox/files/latest/download or however else
+    you get packages.
   * Included tools expect the SoX executable to be on your PATH.
 * Unix like environment
-  * For Windows, use Git Bash, for Linux or MacOS things should work out of the box.
+  * For Windows, use Git Bash; for Linux or MacOS things should work out of the
+    box.
 
 # Sourcing Videos from Youtube
 The included `source_youtube_video.sh` can be used to download audio from
@@ -102,14 +109,22 @@ This script has the following dependencies:
 * [SoX](https://sourceforge.net/projects/sox/files/latest/download)
 
 # Pitfalls and Caveats
-* These scripts are mostly written around the included data corpus; If you want to add another data corpus to this workflow, you will have to modify `split_into_train_test.py` and `build_dataset.sh` to incorporate it.
+* If you want to add another data corpus to this workflow, you will have to
+  modify `build_dataset.sh` and stick to the conventions used there.
 * Special care needs to be taken when splitting data into training and testing folds:
+
     * If your training and testing data are too similar, your accuracy will look great but your model will not generalize well
     * If your training and testing data are too dissimilar your model will never be able to achieve good accuracy on your test data
     * [This article](https://towardsdatascience.com/train-validation-and-test-sets-72cb40cba9e7) covers some general points about how data should be split into folds.
-    
-  The `split_into_train_test.py` script does some work to help in this regard, but it's worth looking at that script to see how this is being done. You'll need to do something similar if you add your own data corpus.
-* Adding to the above note, Edge Impulse doesn't explicity allow labeling data as validation (data that is not directly 'learned' on, but is used to know when to stop training your model) and instead just shuffles data randomly. We can hack around this if it's causing a lot of issues.
+  
+  The `split_into_train_test.py` script does some work to help in this regard,
+  but it's worth looking at that script to see how this is being done. You'll
+  need to do something similar if you add your own data corpus.
+
+* Adding to the above note, Edge Impulse doesn't explicitly allow labeling data
+  as validation (data that is not directly 'learned' on, but is used to know
+  when to stop training your model) and instead just shuffles data randomly. We
+  can hack around this if it's causing a lot of issues.
 
 # Data Sources
 ESC-50
