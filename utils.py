@@ -39,13 +39,13 @@ def stackplot(ax, xlabels, legend, values, width=0.8):
 def sample_sets(x, M, kmax=None, key=None):
     L = len(x)
     if L == 0:
-        return
+        return np.array([0], dtype=int)
     
     if key is None:
         key = len
     
     # Number of samples per row
-    xn = np.array([*map(key, x)])
+    xn = np.array([*map(key, x)], dtype=int)
 
     # Number of samples in sorted order
     xnas = np.argsort(xn)
@@ -53,67 +53,60 @@ def sample_sets(x, M, kmax=None, key=None):
     # Array with number of elements to be chosen from each row
     m = np.zeros_like(xn)
 
-    if kmax is None:
-        kmax = xn[xnas[-1]]
-        
+    if kmax is not None:
+        xn = np.minimum(xn, kmax)
+
     # Find the number of samples to choose per bin
     i = 0
-    k = 0
     R = 0
-    while i < L and 0 < M:
-        # Get the minimum number of samples contained in each bin
-        ki = xnas[i]
-        ni = xn[ki]
+    # N = M
+    while i < L and M > 0:
+        # Get the minimum number of samples contained in each remaining bin
+        j = xnas[i]
+        ni = xn[j]
         k = ni - m[i]
 
-        # Get the total remaining samples
-        r = min(M, k*(L - i))
+        # Get the number of samples to grab this loop
+        n = min(M, k*(L - i))
 
         # Spread the samples over the remaining bins
-        k, r = divmod(r, (L - i))
-        
-        M -= k*(L - i) + R
+        k, r = divmod(n, (L - i))
 
-        # Add k samples to each output bin
+        # Add the k samples to each output bin
         m[i:] += k
 
-        # Add the remainder that we couldn't fit last loop
-        m[i:i+R] += 1
-
-        # If there's space, fit the remainder in the next r consecutive bins
-        if m[i] < ni:
-            m[i:i+r] += 1
-            M -= r
-        else:    
-            # Save the remainder that will be added next loop
-            R = r
+        # Dole out remainder samples later, giving priority to the input order
+        R += r
+        
+        # Update the sample counter
+        M -= n
         
         # Skip ahead to the next largest bin
-        while i < L and xn[xnas[i]] == ni:
+        i += 1
+        while i < L:
+            j = xnas[i]
+            if xn[j] != ni:
+                break
             i += 1
 
-    # Get back the index order
+    # Unsort the array
     xnas = np.argsort(xnas)
+    m = m[xnas]
 
-    # Yield the number of samples chosen per bin
-    i = 0
-    y = [0]*L
-    while i < L:
-        ki = xnas[i]
-        n = min(kmax, m[ki])
-        if n < kmax < xn[i] and 0 < R:
-            n += 1
-            R -= 1
-        yield (n, x[i])
-        # yield np.choice(x[i], size=n)
-        i += 1
+    # Add the remainder to the first R bins wrt the input order
+    mask = m < xn
+    mask&= np.cumsum(mask) <= R
+    m[mask] += 1
+    # assert sum(m) == min(N, kmax*L if kmax else N)
 
-def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey=None, shuffle=True, rng=None, split_mode='discard', balance_groups=False, balance_hashes=False):
+    return m
+
+def split_train_test(samples, test_portion, N=None, hashkey=None, groupkey=None, shuffle=True, rng=None, split_mode='discard', balance_groups=False, balance_hashes=False):
     '''
     Generate a train/test split
     Note: Assumes all elements with the same hashkey also have the same groupkey (but not vice-versa)
     N : scalar
-        Maximum number of samples to choose per class
+        Maximum number of samples to choose
     hashkey : function
         allows you to pool data samples to disallow samples from similar distributions 
         (e.g. sub-segments from the same sample) splitting across folds
@@ -126,117 +119,115 @@ def split_train_test(class_samples, test_portion, N=None, hashkey=None, groupkey
         'train' - place data into training split
         'discard' - place data into discard
     '''
-    test = {}
-    train = {}
-    discard = {}
+    test = []
+    train = []
+    discard = []
     
     assert split_mode in ('train', 'test', 'discard')
 
     if rng is None:
         rng = np.random
-        
-    for cls in class_samples:
-        clssamples = class_samples[cls]
-        train[cls] = []
-        test[cls] = []
-        discard[cls] = []
-        
-        # Split class samples by hash code first
-        if hashkey is None:
-            hash_map = { i: [v] for i,v in enumerate(clssamples) }
-        else:
-            hash_map = { k: [*it] for (k, it) in groupby(clssamples, hashkey) }
-        
-        # Split hashed class samples by attribute group
-        if groupkey is None:
-            # Put everything in the same group
-            group_map = { 0: [*hash_map] }
-        else:
-            group_map = { k: [*it] for (k, it) in groupby(hash_map, groupkey) }
+    
+    # Split samples by hash code first
+    if hashkey is None:
+        hshmap = { i: [v] for i,v in enumerate(samples) }
+    else:
+        hshmap = { k: [*it] for (k, it) in groupby(samples, hashkey) }
+    
+    # Split hashed samples by attribute group
+    if groupkey is None:
+        # Put everything in the same group
+        grpmap = { 0: [*hshmap] }
+    else:
+        grpmap = { k: [*it] for (k, it) in groupby(hshmap, groupkey) }
+    
+    # Shuffle to randomize the split across folds
+    groups = [*grpmap]
+    if shuffle:
+        rng.shuffle(groups) 
+    
+    # Balance sampling according to the total number of samples belonging to a hash
+    grplen = lambda gk: sum(len(hshmap[h]) for h in grpmap[gk])
+
+    Ngrpmax = None
+    if balance_groups:
+        Ngrpmax = min(map(grplen, groups))
+    
+    if N is None:
+        Nc = len(samples)
+    else:
+        Nc = min(N, len(samples))
+    
+    # Distribute each 'group' of samples between train and test folds
+    for gk, m in zip(groups, sample_sets(groups, Nc, kmax=Ngrpmax, key=grplen)):
+        # Select a portion for training, and rest is reserved for testing
+        m_train = max(1, min(m-1, int((1-test_portion)*m + 0.5)))
+        m_test = m - m_train
+        hashes = grpmap[gk]
+        try:
+            assert (0 < m_train < m), "Not enough samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
+            assert (len(hashes) > 1), "Not enough hashed samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
+        except AssertionError as err:
+            # if split_mode == 'raise':
+            #     raise
+            # warn(str(err))
+            if split_mode == 'discard':
+                m_train = m_test = 0                    
+            elif split_mode == 'train':
+                m_train = m
+                m_test = 0
+            elif split_mode == 'test':
+                m_test = m
+                m_train = 0
         
         # Shuffle to randomize the split across folds
-        groups = [*group_map]
         if shuffle:
-            rng.shuffle(groups) 
-        
-        # Balance sampling according to the total number of samples belonging to a hash
-        glenkey = lambda gk: sum(len(hash_map[h]) for h in group_map[gk])
+            rng.shuffle(hashes)
 
-        Ngmax = None
-        if balance_groups:
-            Ngmax = min(map(glenkey, groups))
-        
-        if N is None:
-            Nc = len(clssamples)
-        else:
-            Nc = min(N, len(clssamples))
-        
-        # Distribute each 'group' of samples between train and test folds
-        for m, gk in sample_sets(groups, Nc, kmax=Ngmax, key=glenkey):
-            # Select a portion for training, and rest is reserved for testing
-            m_train = max(1, min(m-1, int((1-test_portion)*m + 0.5)))
-            m_test = m - m_train
-            hashes = group_map[gk]
-            try:
-                assert (0 < m_train < m), "Not enough samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
-                assert (len(hashes) > 1), "Not enough hashed samples in group '%s' to allow splitting; samples assigned to %s fold" % (gk, split_mode)
-            except AssertionError as err:
-                # if split_mode == 'raise':
-                #     raise
-                # warn(str(err))
-                if split_mode == 'discard':
-                    m_train = m_test = 0                    
-                elif split_mode == 'train':
-                    m_train = m
-                    m_test = 0
-                elif split_mode == 'test':
-                    m_test = m
-                    m_train = 0
-            
-            # Shuffle to randomize the split across folds
+        grphshmap = { h: hshmap[h] for h in hashes }
+        hshlen = lambda h: len(hshmap[h])
+
+        Nhshmax = None
+        if balance_hashes:
+            Nhshmax = min(map(hshlen, hashes))
+
+        # Deal out samples
+        # Since hash groups are not necessarily of the same size, alternate
+        # between folds to keep things as balanced as possible
+        f = 0            
+        folds = [(train, m_train), (test, m_test)]
+        fld, m_f = folds[f]
+        # ndropped = 0
+        for hk, m_h in zip(hashes, sample_sets(hashes, m, kmax=Nhshmax, key=hshlen)):
+            hshsamples = grphshmap.pop(hk)
             if shuffle:
-                rng.shuffle(hashes)
+                rng.shuffle(hshsamples)
+            
+            fld += hshsamples[:m_h]
+            m_f -= m_h
+            # ndropped += len(hshsamples) - m_h
 
-            group_hash_map = { h: hash_map[h] for h in hashes }
-            hlenkey = lambda h: len(hash_map[h])
-
-            Nhmax = None
-            if balance_hashes:
-                Nhmax = min(map(hlenkey, hashes))
-
-            # Deal out samples
-            # Since hash groups are not necessarily of the same size, alternate
-            # between folds to keep things as balanced as possible
-            f = 0            
-            folds = [(train, m_train), (test, m_test)]
-            fld, m_f = folds[f]
-            for m_h, hk in sample_sets(hashes, m, kmax=Nhmax, key=hlenkey):
-                samples = group_hash_map.pop(hk)
-                if shuffle:
-                    rng.shuffle(samples)
-                
-                if folds[f][1] > 0:
-                    fld, m_f = folds[f]
-                if m_f == 0:
-                    break
-                
-                n = min(m_h, m_f)
-                m_f -= n
-                fld[cls] += samples[:n]
-                
+            if folds[f^1][1] > 0:
                 # Alternate to other fold
                 folds[f] = (fld, m_f)
                 f ^= 1
-
-                # Discard remaining samples in this hash group to maintain
-                # the train/test ratio
-                # discard[cls] += samples[n:]
-
-            # Any remaining hashes in this group which would throw off the
-            # train/test ratio are discarded
-            for v in group_hash_map.values():
-                discard[cls] += v
+                fld, m_f = folds[f]
+            elif m_f == 0:
+                break
             
+            # Discard remaining samples in this hash group to maintain
+            # the train/test ratio
+            # discard += hshsamples[m_h:]
+
+        # Any remaining hashes in this group which would throw off the
+        # train/test ratio are discarded
+        for v in grphshmap.values():
+            # ndropped += len(v)
+            discard += v
+    
+        # if ndropped:
+        #     print("Dropped %d samples (%s)" % (ndropped, gk))
+
     return train, test, discard
 
 def reduceruns(runs, mergethreshold=0, dropthreshold=0):

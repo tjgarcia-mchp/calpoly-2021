@@ -31,7 +31,7 @@ def cli(argv):
         help='JSON file defining target classes and where to source the files for each class.')
     parser.add_argument('dstdir', help='Output directory.')
     parser.add_argument('-r', '--test-ratio', default=0.2, type=float, \
-        help='Desired test/train ratio. (%(default)s)')
+        help='Desired test to train ratio. (%(default)s)')
     parser.add_argument('-b', '--balance-classes', '--balance', action='store_true', \
         help='''\
 Limit the number of samples used per class to the class with the least number of samples; this keeps the number of samples per class balanced.'''
@@ -66,7 +66,7 @@ if not isinteractive:
     args = cli(sys.argv[1:])
 else:
     import shlex
-    cmd = '--balance glassbreak//input.json test/'
+    cmd = '-P --test-ratio=0.2 glassbreak/input.json glassbreak'
     args = cli(shlex.split(os.path.expanduser(cmd)))
 
 target_classes = json.load(open(args.source_file))
@@ -116,6 +116,9 @@ def hashkey(fn):
     elif srcds == 'DEMAND':
         # for DEMAND we do allow subsegments to split between folds
         hashedfn = basename
+    elif srcds == 'keywords':
+        # for google voice commands use the _nohash_ tag
+        hashedfn = basename.rsplit('_nohash_', 1)[0]
     else:
         # This ensures subsegments are *not* split across train/test folds
         hashedfn = nohashptrn.sub('', basename)
@@ -135,38 +138,49 @@ def groupkey(hashkey):
     return '_'.join((srcds, srccat))
 
 # Finally, make the split
+train = {}
+validation = {}
+test = {}
+discard = {}
+
 kwargs = dict(
-    split_mode='train', 
-    N=args.max_samples,
     hashkey=hashkey,
     groupkey=None if args.no_stratify else groupkey,
     balance_groups = args.balance_groups,
     balance_hashes = args.balance_hashes,
+    split_mode='train',    
     rng=np.random
 )
 
-train, test, discard = ut.split_train_test(class_files, args.test_ratio, **kwargs)
+if args.balance_classes:
+    N = min(map(len, class_files.values()))
+else:
+    N = max(map(len, class_files.values()))
+if args.max_samples:
+    N = min(N, args.max_samples)
+
+for cls, files in class_files.items():
+    train[cls], test[cls], discard[cls] = ut.split_train_test(files, args.test_ratio, N=N, **kwargs)
 
 folds = dict(zip('train test'.split(), (train, test)))
 
 if args.validation:
     # Split further into training and validation
+    folds['validation'] = validation
     
-    # Add back unused samples
-    for k,v in discard.items():
-        train[k].extend(v)
+    if args.balance_classes:
+        N = min(map(len, train.values()))
+    else:
+        N = max(map(len, train.values()))
+    if args.max_samples:
+        N = min(N, args.max_samples)
 
-    train, val, discard = ut.split_train_test(train, args.test_ratio, **kwargs)
-    
-    folds['validation'] = val
-    folds['train'] = train
+    val_ratio = args.test_ratio / (1 - args.test_ratio)
+    for cls, files in train.items():
+        # Add back unused samples
+        files.extend(discard.pop(cls))
 
-# Balance out classes as needed
-if args.balance_classes:
-    for fld in folds.values():
-        N = min(map(len, fld.values()))
-        for cls, values in fld.items():
-            fld[cls] = values[:N]
+        train[cls], validation[cls], discard[cls] = ut.split_train_test(files, val_ratio, N=N, **kwargs)
 
 nsamples = { 
     fldk : { 
@@ -189,7 +203,6 @@ rows = [\
     ]
 
 rows = pd.DataFrame(rows, columns=keys)
-
 #%% Plot distribution of data by groups
 lblfmt = '%s (%0.2f)'
 lgndfmt = '%s (%0.2f//%dh%02dm)'
@@ -242,13 +255,6 @@ fig.savefig(os.path.join(args.dstdir, 'fold_distribution.png'))
 #%% Create listing files for each fold
 import shutil
 
-fold_abbrev = dict(
-    zip(
-        ['train', 'test', 'validation'],
-        ['trn', 'tst', 'val']   
-    )
-)
-
 # Write file paths out to text files
 folds['discard'] = discard
 for fldk, fldv in folds.items():
@@ -263,7 +269,7 @@ for fldk, fldv in folds.items():
             for srcfn in files:                
                 # Write paths relative to output directory
                 if args.copy and fldk != 'discard':
-                    bn = '.'.join((cls, fold_abbrev[fldk], os.path.basename(srcfn)))
+                    bn = '.'.join((cls, os.path.basename(srcfn)))
                     dstfn = os.path.join(subdir, bn)
                     shutil.copyfile(srcfn, dstfn)
                     srcfn = dstfn
